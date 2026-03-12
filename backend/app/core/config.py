@@ -29,6 +29,10 @@ class Settings(BaseSettings):
     whisper_device: str = "cpu"
     whisper_compute_type: str = "int8"
 
+    # Google OAuth
+    google_client_id: str = ""
+    google_client_secret: str = ""
+
     # App
     frontend_url: str = "http://localhost:3000"
     backend_url: str = "http://localhost:8000"
