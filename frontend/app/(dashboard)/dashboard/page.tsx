@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef, useCallback } from "react";
 import Link from "next/link";
-import { Plus, Video, Trash2, Clock, FileText, AlertCircle } from "lucide-react";
+import { Plus, Trash2, Clock, FileText, AlertCircle } from "lucide-react";
 import { Video as VideoType, listVideos, deleteVideo, getUsage, UsageStats } from "@/lib/api";
 import {
   formatRelativeTime,
@@ -17,8 +17,9 @@ export default function DashboardPage() {
   const [usage, setUsage] = useState<UsageStats | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const intervalRef = useRef<NodeJS.Timeout | null>(null);
 
-  const fetchVideos = async () => {
+  const fetchVideos = useCallback(async () => {
     const result = await listVideos();
     if (result.error) {
       setError(result.error);
@@ -26,26 +27,45 @@ export default function DashboardPage() {
       setVideos(result.data);
     }
     setLoading(false);
-  };
+  }, []);
 
-  const fetchUsage = async () => {
+  const fetchUsage = useCallback(async () => {
     const result = await getUsage();
     if (result.data) {
       setUsage(result.data);
     }
-  };
+  }, []);
 
+  // Initial fetch on mount
   useEffect(() => {
     fetchVideos();
     fetchUsage();
-    // Poll for updates every 5 seconds if there are processing videos
-    const interval = setInterval(() => {
-      if (videos.some((v) => !["completed", "failed"].includes(v.status))) {
+  }, [fetchVideos, fetchUsage]);
+
+  // Separate effect for polling - only when there are processing videos
+  useEffect(() => {
+    const hasProcessing = videos.some((v) => !["completed", "failed"].includes(v.status));
+
+    // Clear any existing interval
+    if (intervalRef.current) {
+      clearInterval(intervalRef.current);
+      intervalRef.current = null;
+    }
+
+    // Only poll if there are processing videos
+    if (hasProcessing) {
+      intervalRef.current = setInterval(() => {
         fetchVideos();
+      }, 5000);
+    }
+
+    return () => {
+      if (intervalRef.current) {
+        clearInterval(intervalRef.current);
+        intervalRef.current = null;
       }
-    }, 5000);
-    return () => clearInterval(interval);
-  }, [videos]);
+    };
+  }, [videos, fetchVideos]);
 
   const handleDelete = async (videoId: string) => {
     if (!confirm("Are you sure you want to delete this video?")) return;
@@ -117,9 +137,9 @@ export default function DashboardPage() {
 
       <div className="flex items-center justify-between mb-8">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900">My Videos</h1>
+          <h1 className="text-2xl font-bold text-gray-900">My Transcripts</h1>
           <p className="text-gray-600">
-            {videos.length} video{videos.length !== 1 ? "s" : ""}
+            {videos.length} transcript{videos.length !== 1 ? "s" : ""}
           </p>
         </div>
         <Link
@@ -140,12 +160,12 @@ export default function DashboardPage() {
 
       {videos.length === 0 ? (
         <div className="text-center py-16 bg-white rounded-xl border">
-          <Video className="h-12 w-12 text-gray-400 mx-auto mb-4" />
+          <FileText className="h-12 w-12 text-gray-400 mx-auto mb-4" />
           <h2 className="text-xl font-semibold text-gray-900 mb-2">
-            No videos yet
+            No transcripts yet
           </h2>
           <p className="text-gray-600 mb-6">
-            Upload your first video to get started with transcription.
+            Upload a video to generate your first transcript.
           </p>
           <Link
             href="/upload"

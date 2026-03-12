@@ -39,7 +39,7 @@ export default function DashboardLayout({
   };
 
   const navItems = [
-    { href: "/dashboard", icon: FolderOpen, label: "My Videos" },
+    { href: "/dashboard", icon: FolderOpen, label: "My Transcripts" },
     { href: "/upload", icon: Upload, label: "Upload" },
     { href: "/settings", icon: Settings, label: "Settings" },
   ];

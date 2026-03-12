@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef, useCallback } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import {
@@ -45,7 +45,9 @@ export default function TranscriptPage() {
   const [translatedSegments, setTranslatedSegments] = useState<TranscriptSegment[] | null>(null);
   const [translatedLang, setTranslatedLang] = useState<string | null>(null);
 
-  const fetchVideo = async () => {
+  const intervalRef = useRef<NodeJS.Timeout | null>(null);
+
+  const fetchVideo = useCallback(async () => {
     const result = await getVideo(videoId);
     if (result.error) {
       setError(result.error);
@@ -53,28 +55,45 @@ export default function TranscriptPage() {
       setVideo(result.data);
     }
     setLoading(false);
-  };
+  }, [videoId]);
 
-  useEffect(() => {
-    fetchVideo();
-    fetchLanguages();
-
-    // Poll for updates if still processing
-    const interval = setInterval(() => {
-      if (video && !["completed", "failed"].includes(video.status)) {
-        fetchVideo();
-      }
-    }, 3000);
-
-    return () => clearInterval(interval);
-  }, [videoId, video?.status]);
-
-  const fetchLanguages = async () => {
+  const fetchLanguages = useCallback(async () => {
     const result = await getSupportedLanguages();
     if (result.data) {
       setLanguages(result.data);
     }
-  };
+  }, []);
+
+  // Initial fetch on mount
+  useEffect(() => {
+    fetchVideo();
+    fetchLanguages();
+  }, [fetchVideo, fetchLanguages]);
+
+  // Separate effect for polling - only when still processing
+  useEffect(() => {
+    const isProcessing = video && !["completed", "failed"].includes(video.status);
+
+    // Clear any existing interval
+    if (intervalRef.current) {
+      clearInterval(intervalRef.current);
+      intervalRef.current = null;
+    }
+
+    // Only poll if still processing
+    if (isProcessing) {
+      intervalRef.current = setInterval(() => {
+        fetchVideo();
+      }, 3000);
+    }
+
+    return () => {
+      if (intervalRef.current) {
+        clearInterval(intervalRef.current);
+        intervalRef.current = null;
+      }
+    };
+  }, [video?.status, fetchVideo]);
 
   const handleTranslate = async () => {
     if (!selectedLang) return;
