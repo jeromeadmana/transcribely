@@ -1,0 +1,123 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: transcribely
+      POSTGRES_PASSWORD: devpassword
+      POSTGRES_DB: transcribely
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U transcribely"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Redis (Celery Broker + Cache)
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # MinIO (S3-compatible local storage)
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    volumes:
+      - minio_data:/data
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # MinIO bucket setup
+  minio-setup:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set myminio http://minio:9000 minioadmin minioadmin;
+      mc mb myminio/transcribely-videos --ignore-existing;
+      mc anonymous set download myminio/transcribely-videos;
+      exit 0;
+      "
+
+  # FastAPI Backend
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://transcribely:devpassword@db:5432/transcribely
+      - SYNC_DATABASE_URL=postgresql://transcribely:devpassword@db:5432/transcribely
+      - REDIS_URL=redis://redis:6379/0
+      - S3_ENDPOINT=http://minio:9000
+      - S3_ACCESS_KEY=minioadmin
+      - S3_SECRET_KEY=minioadmin
+      - S3_BUCKET=transcribely-videos
+      - JWT_SECRET=dev-secret-change-in-production
+      - WHISPER_MODEL=base
+      - WHISPER_DEVICE=cpu
+      - FRONTEND_URL=http://localhost:3000
+    volumes:
+      - ./backend/app:/app/app
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+
+  # Celery Worker (with Whisper)
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.worker
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://transcribely:devpassword@db:5432/transcribely
+      - SYNC_DATABASE_URL=postgresql://transcribely:devpassword@db:5432/transcribely
+      - REDIS_URL=redis://redis:6379/0
+      - S3_ENDPOINT=http://minio:9000
+      - S3_ACCESS_KEY=minioadmin
+      - S3_SECRET_KEY=minioadmin
+      - S3_BUCKET=transcribely-videos
+      - WHISPER_MODEL=base
+      - WHISPER_DEVICE=cpu
+      - WHISPER_COMPUTE_TYPE=int8
+    volumes:
+      - ./backend/app:/app/app
+      - whisper_cache:/root/.cache/huggingface
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+  minio_data:
+  whisper_cache:
