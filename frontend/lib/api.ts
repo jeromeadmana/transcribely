@@ -216,3 +216,42 @@ export interface PlanInfo {
 export async function getPlans() {
   return fetchApi<PlanInfo[]>("/api/billing/plans");
 }
+
+// Video streaming URLs (need token in query for video/track elements)
+export function getVideoStreamUrl(video_id: string): string {
+  const token = typeof window !== "undefined" ? localStorage.getItem("access_token") : null;
+  return `${API_URL}/api/videos/${video_id}/stream${token ? `?token=${token}` : ""}`;
+}
+
+export function getSubtitlesUrl(video_id: string): string {
+  const token = typeof window !== "undefined" ? localStorage.getItem("access_token") : null;
+  return `${API_URL}/api/transcripts/${video_id}/subtitles.vtt${token ? `?token=${token}` : ""}`;
+}
+
+export function getTranslatedSubtitlesUrl(video_id: string, target_lang: string): string {
+  const token = typeof window !== "undefined" ? localStorage.getItem("access_token") : null;
+  return `${API_URL}/api/transcripts/${video_id}/translate/subtitles.vtt?target_lang=${target_lang}${token ? `&token=${token}` : ""}`;
+}
+
+// Translation
+export interface SupportedLanguage {
+  code: string;
+  name: string;
+}
+
+export interface TranslatedTranscript {
+  video_id: string;
+  source_language: string;
+  target_language: string;
+  target_language_name: string;
+  full_text: string;
+  segments: TranscriptSegment[];
+}
+
+export async function getSupportedLanguages() {
+  return fetchApi<SupportedLanguage[]>("/api/transcripts/languages/supported");
+}
+
+export async function translateTranscript(video_id: string, target_lang: string) {
+  return fetchApi<TranslatedTranscript>(`/api/transcripts/${video_id}/translate?target_lang=${target_lang}`);
+}

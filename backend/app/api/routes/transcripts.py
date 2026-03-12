@@ -10,9 +10,10 @@ from sqlalchemy.orm import selectinload
 
 from app.core.database import get_db
 from app.core.config import settings
-from app.api.deps import get_current_user_organization
+from app.api.deps import get_current_user_organization, get_user_organization_from_token_or_query
 from app.models.video import Video, Transcript, VideoStatus
 from app.schemas.video import TranscriptResponse, TranscriptUpdate, ProgressEvent
+from app.services.translation import translation_service, SUPPORTED_LANGUAGES
 
 
 router = APIRouter(prefix="/transcripts", tags=["transcripts"])
@@ -297,3 +298,179 @@ def _generate_vtt(segments: list) -> str:
         lines.append(text)
         lines.append("")
     return "\n".join(lines)
+
+
+@router.get("/{video_id}/subtitles.vtt")
+async def get_subtitles(
+    video_id: UUID,
+    token: str = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """Get subtitles in WebVTT format for video player."""
+    # Use token query param or header for auth (track elements can't send headers)
+    auth = await get_user_organization_from_token_or_query(token, None, db)
+    user, organization, membership = auth
+
+    result = await db.execute(
+        select(Video)
+        .options(selectinload(Video.transcript))
+        .where(
+            Video.id == video_id,
+            Video.organization_id == organization.id,
+        )
+    )
+    video = result.scalar_one_or_none()
+
+    if not video:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Video not found",
+        )
+
+    if not video.transcript or not video.transcript.segments:
+        # Return empty VTT if no transcript
+        return Response(
+            content="WEBVTT\n\n",
+            media_type="text/vtt",
+            headers={
+                "Access-Control-Allow-Origin": "*",
+            },
+        )
+
+    content = _generate_vtt(video.transcript.segments)
+    return Response(
+        content=content,
+        media_type="text/vtt",
+        headers={
+            "Access-Control-Allow-Origin": "*",
+        },
+    )
+
+
+@router.get("/languages/supported")
+async def get_supported_languages():
+    """Get list of supported translation languages."""
+    return [
+        {"code": code, "name": name}
+        for code, name in SUPPORTED_LANGUAGES.items()
+    ]
+
+
+@router.get("/{video_id}/translate")
+async def translate_transcript(
+    video_id: UUID,
+    target_lang: str,
+    db: AsyncSession = Depends(get_db),
+    auth: tuple = Depends(get_current_user_organization),
+):
+    """
+    Translate transcript to target language.
+    Returns translated segments (does not modify original).
+    """
+    user, organization, membership = auth
+
+    if target_lang not in SUPPORTED_LANGUAGES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Unsupported language: {target_lang}. Supported: {list(SUPPORTED_LANGUAGES.keys())}",
+        )
+
+    result = await db.execute(
+        select(Video)
+        .options(selectinload(Video.transcript))
+        .where(
+            Video.id == video_id,
+            Video.organization_id == organization.id,
+        )
+    )
+    video = result.scalar_one_or_none()
+
+    if not video:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Video not found",
+        )
+
+    if not video.transcript or not video.transcript.segments:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Transcript not found or has no segments",
+        )
+
+    # Get source language from transcript
+    source_lang = video.transcript.language or "auto"
+
+    # Translate segments
+    translated_segments = await translation_service.translate_segments(
+        video.transcript.segments,
+        target_lang,
+        source_lang,
+    )
+
+    # Generate full text from translated segments
+    full_text = " ".join(seg["text"] for seg in translated_segments)
+
+    return {
+        "video_id": str(video_id),
+        "source_language": source_lang,
+        "target_language": target_lang,
+        "target_language_name": SUPPORTED_LANGUAGES[target_lang],
+        "full_text": full_text,
+        "segments": translated_segments,
+    }
+
+
+@router.get("/{video_id}/translate/subtitles.vtt")
+async def get_translated_subtitles(
+    video_id: UUID,
+    target_lang: str,
+    token: str = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """Get translated subtitles in WebVTT format for video player."""
+    auth = await get_user_organization_from_token_or_query(token, None, db)
+    user, organization, membership = auth
+
+    if target_lang not in SUPPORTED_LANGUAGES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Unsupported language: {target_lang}",
+        )
+
+    result = await db.execute(
+        select(Video)
+        .options(selectinload(Video.transcript))
+        .where(
+            Video.id == video_id,
+            Video.organization_id == organization.id,
+        )
+    )
+    video = result.scalar_one_or_none()
+
+    if not video:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Video not found",
+        )
+
+    if not video.transcript or not video.transcript.segments:
+        return Response(
+            content="WEBVTT\n\n",
+            media_type="text/vtt",
+            headers={"Access-Control-Allow-Origin": "*"},
+        )
+
+    # Translate segments
+    source_lang = video.transcript.language or "auto"
+    translated_segments = await translation_service.translate_segments(
+        video.transcript.segments,
+        target_lang,
+        source_lang,
+    )
+
+    content = _generate_vtt(translated_segments)
+    return Response(
+        content=content,
+        media_type="text/vtt",
+        headers={"Access-Control-Allow-Origin": "*"},
+    )

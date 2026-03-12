@@ -1,14 +1,16 @@
 from typing import List
 from uuid import UUID
 import uuid as uuid_lib
-from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form
+from pathlib import Path
+from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form, Request
+from fastapi.responses import StreamingResponse, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from app.core.database import get_db
 from app.core.config import settings
-from app.api.deps import get_current_user_organization
+from app.api.deps import get_current_user_organization, get_user_organization_from_token_or_query
 from app.models.video import Video, VideoStatus
 from app.schemas.video import (
     VideoResponse,
@@ -186,3 +188,102 @@ async def delete_video(
     # Delete from database
     await db.delete(video)
     await db.commit()
+
+
+@router.get("/{video_id}/stream")
+async def stream_video(
+    video_id: UUID,
+    request: Request,
+    token: str = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """Stream video file with range request support for seeking."""
+    # Use token query param or header for auth (video elements can't send headers)
+    auth = await get_user_organization_from_token_or_query(token, None, db)
+    user, organization, membership = auth
+
+    result = await db.execute(
+        select(Video).where(
+            Video.id == video_id,
+            Video.organization_id == organization.id,
+        )
+    )
+    video = result.scalar_one_or_none()
+
+    if not video:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Video not found",
+        )
+
+    file_path = Path(storage_service.get_file_path(video.storage_key))
+    if not file_path.exists():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Video file not found",
+        )
+
+    file_size = file_path.stat().st_size
+    content_type = video.mime_type or "video/mp4"
+
+    # Handle range requests for video seeking
+    range_header = request.headers.get("range")
+
+    if range_header:
+        # Parse range header (e.g., "bytes=0-1023")
+        range_match = range_header.replace("bytes=", "").split("-")
+        start = int(range_match[0]) if range_match[0] else 0
+        end = int(range_match[1]) if range_match[1] else file_size - 1
+
+        # Ensure valid range
+        if start >= file_size:
+            raise HTTPException(
+                status_code=status.HTTP_416_REQUESTED_RANGE_NOT_SATISFIABLE,
+                detail="Range not satisfiable",
+            )
+
+        end = min(end, file_size - 1)
+        content_length = end - start + 1
+
+        def iter_file():
+            with open(file_path, "rb") as f:
+                f.seek(start)
+                remaining = content_length
+                chunk_size = 1024 * 1024  # 1MB chunks
+                while remaining > 0:
+                    read_size = min(chunk_size, remaining)
+                    data = f.read(read_size)
+                    if not data:
+                        break
+                    remaining -= len(data)
+                    yield data
+
+        return StreamingResponse(
+            iter_file(),
+            status_code=206,
+            media_type=content_type,
+            headers={
+                "Content-Range": f"bytes {start}-{end}/{file_size}",
+                "Accept-Ranges": "bytes",
+                "Content-Length": str(content_length),
+            },
+        )
+    else:
+        # Full file request
+        def iter_file():
+            with open(file_path, "rb") as f:
+                chunk_size = 1024 * 1024  # 1MB chunks
+                while True:
+                    data = f.read(chunk_size)
+                    if not data:
+                        break
+                    yield data
+
+        return StreamingResponse(
+            iter_file(),
+            media_type=content_type,
+            headers={
+                "Accept-Ranges": "bytes",
+                "Content-Length": str(file_size),
+            },
+        )
