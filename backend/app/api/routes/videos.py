@@ -1,6 +1,8 @@
 from typing import List
 from uuid import UUID
 import uuid as uuid_lib
+import tempfile
+import os
 from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form, Request
 from fastapi.responses import StreamingResponse, Response
@@ -16,7 +18,6 @@ from app.schemas.video import (
     VideoResponse,
     VideoWithTranscript,
 )
-from app.services.storage import storage_service
 from app.services.usage import usage_service
 from app.tasks.background import process_video_background
 
@@ -75,20 +76,23 @@ async def upload_video(
     content = b"".join(chunks)
     file_size = total_size
 
-    # Generate storage key
+    # Save to temporary file (required for FFmpeg processing)
     file_extension = file.filename.rsplit(".", 1)[-1] if "." in file.filename else "mp4"
-    storage_key = f"videos/{uuid_lib.uuid4()}.{file_extension}"
+    temp_dir = tempfile.gettempdir()
+    temp_filename = f"{uuid_lib.uuid4()}.{file_extension}"
+    temp_path = os.path.join(temp_dir, temp_filename)
 
-    # Save to local storage
-    storage_service.save_uploaded_file(content, storage_key)
+    # Write video to temp file
+    with open(temp_path, "wb") as f:
+        f.write(content)
 
-    # Create video record
+    # Create video record (storage_key now points to temp file)
     video = Video(
         organization_id=organization.id,
         uploaded_by=user.id,
         title=title or file.filename,
         original_filename=file.filename,
-        storage_key=storage_key,
+        storage_key=temp_path,  # Temporary path, will be deleted after processing
         file_size_bytes=file_size,
         mime_type=file.content_type,
         status=VideoStatus.UPLOADED,
@@ -97,7 +101,7 @@ async def upload_video(
     await db.commit()
     await db.refresh(video)
 
-    # Start background processing
+    # Start background processing (will delete temp file after transcription)
     process_video_background(str(video.id))
 
     return VideoResponse.model_validate(video)
@@ -165,7 +169,7 @@ async def delete_video(
     db: AsyncSession = Depends(get_db),
     auth: tuple = Depends(get_current_user_organization),
 ):
-    """Delete a video and its transcript."""
+    """Delete a video record and its transcript."""
     user, organization, membership = auth
 
     result = await db.execute(
@@ -182,8 +186,12 @@ async def delete_video(
             detail="Video not found",
         )
 
-    # Delete from storage
-    storage_service.delete_file(video.storage_key)
+    # Try to delete temp file if it still exists (usually already deleted after transcription)
+    if video.storage_key and os.path.exists(video.storage_key):
+        try:
+            os.remove(video.storage_key)
+        except OSError:
+            pass
 
     # Delete from database
     await db.delete(video)
@@ -197,93 +205,11 @@ async def stream_video(
     token: str = None,
     db: AsyncSession = Depends(get_db),
 ):
-    """Stream video file with range request support for seeking."""
-    # Use token query param or header for auth (video elements can't send headers)
-    auth = await get_user_organization_from_token_or_query(token, None, db)
-    user, organization, membership = auth
+    """Video streaming is not available - videos are processed in memory and deleted.
 
-    result = await db.execute(
-        select(Video).where(
-            Video.id == video_id,
-            Video.organization_id == organization.id,
-        )
+    This endpoint is kept for API compatibility but returns 410 Gone.
+    """
+    raise HTTPException(
+        status_code=status.HTTP_410_GONE,
+        detail="Video files are not stored. Only transcripts are persisted.",
     )
-    video = result.scalar_one_or_none()
-
-    if not video:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Video not found",
-        )
-
-    file_path = Path(storage_service.get_file_path(video.storage_key))
-    if not file_path.exists():
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Video file not found",
-        )
-
-    file_size = file_path.stat().st_size
-    content_type = video.mime_type or "video/mp4"
-
-    # Handle range requests for video seeking
-    range_header = request.headers.get("range")
-
-    if range_header:
-        # Parse range header (e.g., "bytes=0-1023")
-        range_match = range_header.replace("bytes=", "").split("-")
-        start = int(range_match[0]) if range_match[0] else 0
-        end = int(range_match[1]) if range_match[1] else file_size - 1
-
-        # Ensure valid range
-        if start >= file_size:
-            raise HTTPException(
-                status_code=status.HTTP_416_REQUESTED_RANGE_NOT_SATISFIABLE,
-                detail="Range not satisfiable",
-            )
-
-        end = min(end, file_size - 1)
-        content_length = end - start + 1
-
-        def iter_file():
-            with open(file_path, "rb") as f:
-                f.seek(start)
-                remaining = content_length
-                chunk_size = 1024 * 1024  # 1MB chunks
-                while remaining > 0:
-                    read_size = min(chunk_size, remaining)
-                    data = f.read(read_size)
-                    if not data:
-                        break
-                    remaining -= len(data)
-                    yield data
-
-        return StreamingResponse(
-            iter_file(),
-            status_code=206,
-            media_type=content_type,
-            headers={
-                "Content-Range": f"bytes {start}-{end}/{file_size}",
-                "Accept-Ranges": "bytes",
-                "Content-Length": str(content_length),
-            },
-        )
-    else:
-        # Full file request
-        def iter_file():
-            with open(file_path, "rb") as f:
-                chunk_size = 1024 * 1024  # 1MB chunks
-                while True:
-                    data = f.read(chunk_size)
-                    if not data:
-                        break
-                    yield data
-
-        return StreamingResponse(
-            iter_file(),
-            media_type=content_type,
-            headers={
-                "Accept-Ranges": "bytes",
-                "Content-Length": str(file_size),
-            },
-        )

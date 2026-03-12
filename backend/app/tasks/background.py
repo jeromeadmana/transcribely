@@ -11,7 +11,6 @@ from sqlalchemy.orm import Session
 
 from app.core.database import SyncSessionLocal
 from app.models.video import Video, Transcript, UsageRecord, VideoStatus
-from app.services.storage import storage_service
 from app.services.transcription import transcription_service
 from app.core.config import settings
 
@@ -32,10 +31,14 @@ def update_video_status(db: Session, video_id: UUID, status: VideoStatus, progre
 
 
 def process_video_sync(video_id: str):
-    """Process uploaded video: extract audio and transcribe (synchronous)."""
+    """Process uploaded video: extract audio and transcribe (synchronous).
+
+    Video files are stored temporarily and deleted after transcription.
+    Only the transcript is persisted.
+    """
     video_uuid = UUID(video_id)
     db = SyncSessionLocal()
-    temp_video_path = None
+    video_path = None
     audio_path = None
 
     try:
@@ -44,17 +47,14 @@ def process_video_sync(video_id: str):
         if not video:
             raise ValueError(f"Video not found: {video_id}")
 
+        # Video path is stored directly in storage_key (temporary file)
+        video_path = video.storage_key
+
+        if not os.path.exists(video_path):
+            raise ValueError(f"Video file not found: {video_path}")
+
         # Update status to extracting audio
         update_video_status(db, video_uuid, VideoStatus.EXTRACTING_AUDIO, progress=10)
-
-        # Get the video file path
-        if settings.storage_type == "local":
-            video_path = storage_service.get_file_path(video.storage_key)
-        else:
-            # Download from S3
-            temp_video_path = tempfile.mktemp(suffix=os.path.splitext(video.storage_key)[1])
-            storage_service.download_file(video.storage_key, temp_video_path)
-            video_path = temp_video_path
 
         # Get video duration
         duration = transcription_service.get_video_duration(video_path)
@@ -92,7 +92,8 @@ def process_video_sync(video_id: str):
             )
             db.add(usage)
 
-        # Update video status to completed
+        # Clear storage_key since we're deleting the file
+        video.storage_key = None
         video.status = VideoStatus.COMPLETED
         video.progress = 100
         db.commit()
@@ -105,8 +106,8 @@ def process_video_sync(video_id: str):
         update_video_status(db, video_uuid, VideoStatus.FAILED, error_message=str(e))
 
     finally:
-        # Cleanup temporary files
-        transcription_service.cleanup(temp_video_path, audio_path)
+        # Always cleanup - delete video file and audio file
+        transcription_service.cleanup(video_path, audio_path)
         db.close()
 
 

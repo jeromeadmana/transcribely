@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import {
@@ -12,8 +12,6 @@ import {
   FileText,
   Loader2,
   AlertCircle,
-  Play,
-  List,
   Languages,
   X,
 } from "lucide-react";
@@ -24,13 +22,10 @@ import {
   SupportedLanguage,
   getVideo,
   exportTranscript,
-  getVideoStreamUrl,
-  getSubtitlesUrl,
-  getTranslatedSubtitlesUrl,
   getSupportedLanguages,
   translateTranscript,
 } from "@/lib/api";
-import { formatDuration, formatTimestamp, getVideoStatusColor, getVideoStatusText } from "@/lib/utils";
+import { formatDuration, getVideoStatusColor, getVideoStatusText } from "@/lib/utils";
 
 export default function TranscriptPage() {
   const params = useParams();
@@ -41,10 +36,6 @@ export default function TranscriptPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [copied, setCopied] = useState(false);
-  const [activeSegment, setActiveSegment] = useState<number | null>(null);
-  const [viewMode, setViewMode] = useState<"player" | "transcript">("player");
-  const [currentTime, setCurrentTime] = useState(0);
-  const videoRef = useRef<HTMLVideoElement>(null);
 
   // Translation state
   const [showTranslateModal, setShowTranslateModal] = useState(false);
@@ -103,37 +94,6 @@ export default function TranscriptPage() {
   const clearTranslation = () => {
     setTranslatedSegments(null);
     setTranslatedLang(null);
-  };
-
-  // Update active segment based on video time
-  useEffect(() => {
-    if (!video?.transcript?.segments) return;
-
-    const segments = video.transcript.segments;
-    const currentSegmentIndex = segments.findIndex(
-      (seg, idx) => {
-        const nextSeg = segments[idx + 1];
-        return currentTime >= seg.start && (nextSeg ? currentTime < nextSeg.start : true);
-      }
-    );
-
-    if (currentSegmentIndex !== -1 && currentSegmentIndex !== activeSegment) {
-      setActiveSegment(currentSegmentIndex);
-    }
-  }, [currentTime, video?.transcript?.segments]);
-
-  const handleTimeUpdate = () => {
-    if (videoRef.current) {
-      setCurrentTime(videoRef.current.currentTime);
-    }
-  };
-
-  const handleSegmentClick = (startTime: number) => {
-    if (videoRef.current) {
-      videoRef.current.currentTime = startTime;
-      videoRef.current.play();
-      setViewMode("player"); // Switch to player view when clicking a segment
-    }
   };
 
   const handleCopy = async () => {
@@ -302,177 +262,61 @@ export default function TranscriptPage() {
         </div>
       )}
 
-      {/* Completed state - Video Player with Subtitles */}
-      {video.status === "completed" && (
-        <div className="space-y-4">
-          {/* View Toggle */}
-          <div className="flex items-center gap-2">
-            <button
-              onClick={() => setViewMode("player")}
-              className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition ${
-                viewMode === "player"
-                  ? "bg-primary-600 text-white"
-                  : "bg-gray-100 text-gray-700 hover:bg-gray-200"
-              }`}
-            >
-              <Play className="h-4 w-4" />
-              Video with Subtitles
-            </button>
-            <button
-              onClick={() => setViewMode("transcript")}
-              className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition ${
-                viewMode === "transcript"
-                  ? "bg-primary-600 text-white"
-                  : "bg-gray-100 text-gray-700 hover:bg-gray-200"
-              }`}
-            >
-              <List className="h-4 w-4" />
-              Full Transcript
-            </button>
+      {/* Completed state - Transcript View */}
+      {video.status === "completed" && video.transcript && (
+        <div className="bg-white rounded-xl border">
+          {/* Stats bar */}
+          <div className="px-6 py-4 border-b flex items-center justify-between">
+            <div className="flex items-center gap-6 text-sm text-gray-500">
+              <span className="flex items-center gap-1">
+                <FileText className="h-4 w-4" />
+                {video.transcript.word_count?.toLocaleString() || 0} words
+              </span>
+              {video.transcript.language && (
+                <span>Language: {video.transcript.language.toUpperCase()}</span>
+              )}
+              {video.transcript.segments && (
+                <span>{video.transcript.segments.length} segments</span>
+              )}
+            </div>
+            {translatedLang && (
+              <div className="flex items-center gap-2">
+                <span className="text-xs bg-blue-100 text-blue-700 px-2 py-1 rounded">
+                  Translated to {translatedLang}
+                </span>
+                <button
+                  onClick={clearTranslation}
+                  className="text-gray-400 hover:text-gray-600"
+                  title="Clear translation"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+            )}
           </div>
 
-          {/* Video Player with Subtitles */}
-          {viewMode === "player" && (
-            <div className="bg-black rounded-xl overflow-hidden">
-              <video
-                ref={videoRef}
-                key={translatedLang || "original"} // Re-render video when translation changes
-                className="w-full aspect-video"
-                controls
-                onTimeUpdate={handleTimeUpdate}
-                crossOrigin="anonymous"
-              >
-                <source
-                  src={getVideoStreamUrl(videoId)}
-                  type={video.mime_type || "video/mp4"}
-                />
-                {video.transcript?.segments && video.transcript.segments.length > 0 && (
-                  <track
-                    kind="subtitles"
-                    src={translatedLang && selectedLang
-                      ? getTranslatedSubtitlesUrl(videoId, selectedLang)
-                      : getSubtitlesUrl(videoId)
-                    }
-                    srcLang={selectedLang || video.transcript.language || "en"}
-                    label={translatedLang || video.transcript.language?.toUpperCase() || "English"}
-                    default
-                  />
-                )}
-                Your browser does not support the video tag.
-              </video>
-
-              {/* Current segment display below video */}
-              {video.transcript?.segments && activeSegment !== null && (
-                <div className="bg-gray-900 px-6 py-4">
-                  <p className="text-white text-center text-lg">
-                    {(translatedSegments || video.transcript.segments)[activeSegment]?.text}
-                  </p>
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* Transcript View */}
-          {viewMode === "transcript" && video.transcript && (
-            <div className="bg-white rounded-xl border">
-              {/* Stats bar */}
-              <div className="px-6 py-4 border-b flex items-center justify-between">
-                <div className="flex items-center gap-6 text-sm text-gray-500">
-                  <span className="flex items-center gap-1">
-                    <FileText className="h-4 w-4" />
-                    {video.transcript.word_count?.toLocaleString() || 0} words
-                  </span>
-                  {video.transcript.language && (
-                    <span>Language: {video.transcript.language.toUpperCase()}</span>
-                  )}
-                  {video.transcript.segments && (
-                    <span>{video.transcript.segments.length} segments</span>
-                  )}
-                </div>
-                {translatedLang && (
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs bg-blue-100 text-blue-700 px-2 py-1 rounded">
-                      Translated to {translatedLang}
+          {/* Segments view */}
+          {video.transcript.segments && video.transcript.segments.length > 0 ? (
+            <div className="divide-y max-h-[600px] overflow-y-auto">
+              {(translatedSegments || video.transcript.segments).map((segment, index) => (
+                <div
+                  key={index}
+                  className="px-6 py-4 hover:bg-gray-50 transition"
+                >
+                  <div className="flex items-start gap-4">
+                    <span className="text-xs text-primary-600 font-mono whitespace-nowrap pt-1">
+                      {formatDuration(segment.start)}
                     </span>
-                    <button
-                      onClick={clearTranslation}
-                      className="text-gray-400 hover:text-gray-600"
-                      title="Clear translation"
-                    >
-                      <X className="h-4 w-4" />
-                    </button>
+                    <p className="text-gray-800 leading-relaxed">{segment.text}</p>
                   </div>
-                )}
-              </div>
-
-              {/* Segments view */}
-              {video.transcript.segments && video.transcript.segments.length > 0 ? (
-                <div className="divide-y max-h-[600px] overflow-y-auto">
-                  {(translatedSegments || video.transcript.segments).map((segment, index) => (
-                    <div
-                      key={index}
-                      className={`px-6 py-4 hover:bg-gray-50 cursor-pointer transition ${
-                        activeSegment === index ? "bg-primary-50" : ""
-                      }`}
-                      onClick={() => handleSegmentClick(segment.start)}
-                    >
-                      <div className="flex items-start gap-4">
-                        <span className="text-xs text-primary-600 font-mono whitespace-nowrap pt-1 hover:underline">
-                          {formatDuration(segment.start)}
-                        </span>
-                        <p className="text-gray-800 leading-relaxed">{segment.text}</p>
-                      </div>
-                    </div>
-                  ))}
                 </div>
-              ) : (
-                <div className="p-6">
-                  <p className="text-gray-800 leading-relaxed whitespace-pre-wrap">
-                    {video.transcript.full_text || "No transcript content available."}
-                  </p>
-                </div>
-              )}
+              ))}
             </div>
-          )}
-
-          {/* Clickable segments for video player mode */}
-          {viewMode === "player" && video.transcript?.segments && video.transcript.segments.length > 0 && (
-            <div className="bg-white rounded-xl border">
-              <div className="px-6 py-3 border-b flex items-center justify-between">
-                <h3 className="font-medium text-gray-900">Jump to segment</h3>
-                {translatedLang && (
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs bg-blue-100 text-blue-700 px-2 py-1 rounded">
-                      Translated to {translatedLang}
-                    </span>
-                    <button
-                      onClick={clearTranslation}
-                      className="text-gray-400 hover:text-gray-600"
-                      title="Clear translation"
-                    >
-                      <X className="h-4 w-4" />
-                    </button>
-                  </div>
-                )}
-              </div>
-              <div className="divide-y max-h-[300px] overflow-y-auto">
-                {(translatedSegments || video.transcript.segments).map((segment, index) => (
-                  <div
-                    key={index}
-                    className={`px-6 py-3 hover:bg-gray-50 cursor-pointer transition ${
-                      activeSegment === index ? "bg-primary-50 border-l-4 border-primary-600" : ""
-                    }`}
-                    onClick={() => handleSegmentClick(segment.start)}
-                  >
-                    <div className="flex items-start gap-4">
-                      <span className="text-xs text-primary-600 font-mono whitespace-nowrap pt-0.5">
-                        {formatDuration(segment.start)}
-                      </span>
-                      <p className="text-sm text-gray-700 line-clamp-2">{segment.text}</p>
-                    </div>
-                  </div>
-                ))}
-              </div>
+          ) : (
+            <div className="p-6">
+              <p className="text-gray-800 leading-relaxed whitespace-pre-wrap">
+                {video.transcript.full_text || "No transcript content available."}
+              </p>
             </div>
           )}
         </div>
