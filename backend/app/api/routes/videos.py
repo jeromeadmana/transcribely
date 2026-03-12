@@ -15,6 +15,7 @@ from app.schemas.video import (
     VideoWithTranscript,
 )
 from app.services.storage import storage_service
+from app.services.usage import usage_service
 from app.tasks.background import process_video_background
 
 
@@ -30,6 +31,16 @@ async def upload_video(
 ):
     """Upload a video file directly."""
     user, organization, membership = auth
+
+    # Check monthly quota before upload
+    can_transcribe, quota_error = await usage_service.check_can_transcribe_async(
+        db, organization.id
+    )
+    if not can_transcribe:
+        raise HTTPException(
+            status_code=status.HTTP_402_PAYMENT_REQUIRED,
+            detail=quota_error,
+        )
 
     # Validate file type
     allowed_types = ["video/mp4", "video/quicktime", "video/x-msvideo", "video/x-matroska", "video/webm"]

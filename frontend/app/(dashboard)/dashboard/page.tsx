@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { Plus, Video, Trash2, Clock, FileText, AlertCircle } from "lucide-react";
-import { Video as VideoType, listVideos, deleteVideo } from "@/lib/api";
+import { Video as VideoType, listVideos, deleteVideo, getUsage, UsageStats } from "@/lib/api";
 import {
   formatRelativeTime,
   formatDuration,
@@ -14,6 +14,7 @@ import {
 
 export default function DashboardPage() {
   const [videos, setVideos] = useState<VideoType[]>([]);
+  const [usage, setUsage] = useState<UsageStats | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
@@ -27,8 +28,16 @@ export default function DashboardPage() {
     setLoading(false);
   };
 
+  const fetchUsage = async () => {
+    const result = await getUsage();
+    if (result.data) {
+      setUsage(result.data);
+    }
+  };
+
   useEffect(() => {
     fetchVideos();
+    fetchUsage();
     // Poll for updates every 5 seconds if there are processing videos
     const interval = setInterval(() => {
       if (videos.some((v) => !["completed", "failed"].includes(v.status))) {
@@ -59,6 +68,53 @@ export default function DashboardPage() {
 
   return (
     <div className="max-w-6xl mx-auto">
+      {/* Usage Stats Card */}
+      {usage && (
+        <div className="bg-white rounded-xl border p-6 mb-6">
+          <div className="flex items-center justify-between mb-4">
+            <div>
+              <h2 className="text-lg font-semibold text-gray-900">Monthly Usage</h2>
+              <p className="text-sm text-gray-500 capitalize">{usage.plan} Plan</p>
+            </div>
+            {!usage.is_unlimited && usage.percentage_used >= 80 && (
+              <span className="px-3 py-1 bg-yellow-100 text-yellow-800 text-sm font-medium rounded-full">
+                {usage.percentage_used >= 100 ? "Limit reached" : "Running low"}
+              </span>
+            )}
+          </div>
+
+          {usage.is_unlimited ? (
+            <p className="text-gray-600">Unlimited transcription</p>
+          ) : (
+            <>
+              <div className="flex items-center justify-between text-sm mb-2">
+                <span className="text-gray-600">
+                  {usage.used_minutes.toFixed(1)} / {usage.limit_minutes} minutes used
+                </span>
+                <span className="text-gray-500">{usage.percentage_used}%</span>
+              </div>
+              <div className="h-3 bg-gray-100 rounded-full overflow-hidden">
+                <div
+                  className={`h-full transition-all duration-500 ${
+                    usage.percentage_used >= 100
+                      ? "bg-red-500"
+                      : usage.percentage_used >= 80
+                      ? "bg-yellow-500"
+                      : "bg-primary-600"
+                  }`}
+                  style={{ width: `${Math.min(usage.percentage_used, 100)}%` }}
+                />
+              </div>
+              {usage.remaining_minutes !== null && (
+                <p className="text-sm text-gray-500 mt-2">
+                  {usage.remaining_minutes.toFixed(1)} minutes remaining this month
+                </p>
+              )}
+            </>
+          )}
+        </div>
+      )}
+
       <div className="flex items-center justify-between mb-8">
         <div>
           <h1 className="text-2xl font-bold text-gray-900">My Videos</h1>

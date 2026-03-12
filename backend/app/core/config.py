@@ -41,6 +41,14 @@ class Settings(BaseSettings):
     # Upload limits
     max_upload_size_mb: int = 500  # Max file size in MB
 
+    # Plan limits (minutes per month)
+    plan_limits: dict = {
+        "free": 30,       # 30 minutes/month
+        "starter": 300,   # 5 hours/month
+        "pro": 1200,      # 20 hours/month
+        "enterprise": -1,  # Unlimited (-1)
+    }
+
     class Config:
         env_file = ".env"
         case_sensitive = False

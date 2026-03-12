@@ -8,7 +8,7 @@ from slowapi.errors import RateLimitExceeded
 
 from app.core.config import settings
 from app.core.database import async_engine, Base
-from app.api.routes import auth, videos, transcripts
+from app.api.routes import auth, videos, transcripts, billing
 
 # Rate limiter
 limiter = Limiter(key_func=get_remote_address)
@@ -48,6 +48,7 @@ app.add_middleware(
 app.include_router(auth.router, prefix="/api")
 app.include_router(videos.router, prefix="/api")
 app.include_router(transcripts.router, prefix="/api")
+app.include_router(billing.router, prefix="/api")
 
 
 @app.get("/health")

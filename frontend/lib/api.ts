@@ -191,3 +191,28 @@ export async function exportTranscript(video_id: string, format: "txt" | "json" 
   });
   return response;
 }
+
+// Billing & Usage
+export interface UsageStats {
+  plan: string;
+  limit_minutes: number | null;
+  used_minutes: number;
+  remaining_minutes: number | null;
+  percentage_used: number;
+  is_unlimited: boolean;
+}
+
+export async function getUsage() {
+  return fetchApi<UsageStats>("/api/billing/usage");
+}
+
+export interface PlanInfo {
+  name: string;
+  limit_minutes: number | null;
+  price: string;
+  features: string[];
+}
+
+export async function getPlans() {
+  return fetchApi<PlanInfo[]>("/api/billing/plans");
+}
