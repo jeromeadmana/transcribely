@@ -65,11 +65,24 @@ def process_video_sync(video_id: str):
         update_video_status(db, video_uuid, VideoStatus.EXTRACTING_AUDIO, progress=20)
 
         # Extract audio
+        print(f"Extracting audio from: {video_path}")
         audio_path = transcription_service.extract_audio(video_path)
+        print(f"Audio extracted to: {audio_path}")
+
+        # Verify audio file exists and has content
+        if not os.path.exists(audio_path):
+            raise ValueError(f"Audio extraction failed - file not created: {audio_path}")
+        audio_size = os.path.getsize(audio_path)
+        print(f"Audio file size: {audio_size} bytes")
+        if audio_size < 1000:
+            raise ValueError(f"Audio file too small ({audio_size} bytes) - extraction may have failed")
+
         update_video_status(db, video_uuid, VideoStatus.TRANSCRIBING, progress=30)
 
         # Transcribe audio
+        print(f"Starting transcription...")
         result = transcription_service.transcribe(audio_path)
+        print(f"Transcription complete: {result.get('word_count', 0)} words, {len(result.get('segments', []))} segments")
         update_video_status(db, video_uuid, VideoStatus.TRANSCRIBING, progress=80)
 
         # Create transcript record
@@ -92,8 +105,8 @@ def process_video_sync(video_id: str):
             )
             db.add(usage)
 
-        # Clear storage_key since we're deleting the file
-        video.storage_key = None
+        # Clear storage_key since we're deleting the file (use empty string for NOT NULL constraint)
+        video.storage_key = ""
         video.status = VideoStatus.COMPLETED
         video.progress = 100
         db.commit()

@@ -69,31 +69,59 @@ class TranscriptionService:
         """Transcribe audio file using Whisper."""
         model = self._get_model()
 
-        segments_list, info = model.transcribe(
-            audio_path,
-            beam_size=5,
-            language=language,  # Auto-detect if None
-            vad_filter=True,  # Voice activity detection
-            vad_parameters=dict(
-                min_silence_duration_ms=500,
-            ),
-        )
+        # First try with VAD filter for better results
+        try:
+            segments_gen, info = model.transcribe(
+                audio_path,
+                beam_size=5,
+                language=language,  # Auto-detect if None
+                vad_filter=True,  # Voice activity detection
+                vad_parameters=dict(
+                    min_silence_duration_ms=300,
+                    speech_pad_ms=200,
+                ),
+            )
+            # Convert generator to list immediately to catch errors
+            segments_list = list(segments_gen)
+        except Exception as e:
+            # If VAD fails, try without it
+            print(f"VAD transcription failed, retrying without VAD: {e}")
+            segments_gen, info = model.transcribe(
+                audio_path,
+                beam_size=5,
+                language=language,
+                vad_filter=False,
+            )
+            segments_list = list(segments_gen)
 
-        # Convert generator to list and build result
+        # Build result from segments
         segments = []
         full_text_parts = []
 
         for segment in segments_list:
-            segments.append({
-                "start": round(segment.start, 2),
-                "end": round(segment.end, 2),
-                "text": segment.text.strip(),
-                "speaker": None,  # Speaker diarization would go here
-            })
-            full_text_parts.append(segment.text.strip())
+            text = segment.text.strip()
+            if text:  # Only add non-empty segments
+                segments.append({
+                    "start": round(segment.start, 2),
+                    "end": round(segment.end, 2),
+                    "text": text,
+                    "speaker": None,  # Speaker diarization would go here
+                })
+                full_text_parts.append(text)
 
         full_text = " ".join(full_text_parts)
-        word_count = len(full_text.split())
+        word_count = len(full_text.split()) if full_text else 0
+
+        # Handle case where no speech was detected
+        if not segments:
+            return {
+                "language": info.language if hasattr(info, 'language') else "unknown",
+                "language_probability": getattr(info, 'language_probability', 0.0),
+                "duration": getattr(info, 'duration', 0.0),
+                "full_text": "",
+                "segments": [],
+                "word_count": 0,
+            }
 
         return {
             "language": info.language,
