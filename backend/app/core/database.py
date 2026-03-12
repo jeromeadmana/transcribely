@@ -7,10 +7,12 @@ import ssl
 from app.core.config import settings
 
 
-# SSL context for Aiven PostgreSQL
+# SSL context for PostgreSQL
 ssl_context = ssl.create_default_context()
-ssl_context.check_hostname = False
-ssl_context.verify_mode = ssl.CERT_NONE
+if settings.environment == "development":
+    # Disable SSL verification only in development
+    ssl_context.check_hostname = False
+    ssl_context.verify_mode = ssl.CERT_NONE
 
 # Async engine for FastAPI
 async_engine = create_async_engine(

@@ -7,6 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from app.core.database import get_db
+from app.core.config import settings
 from app.api.deps import get_current_user_organization
 from app.models.video import Video, VideoStatus
 from app.schemas.video import (
@@ -38,13 +39,32 @@ async def upload_video(
             detail=f"Invalid file type. Allowed: {', '.join(allowed_types)}",
         )
 
+    # Check file size before reading entire file
+    max_size = settings.max_upload_size_mb * 1024 * 1024  # Convert to bytes
+
+    # Read in chunks to validate size without loading entire file
+    chunks = []
+    total_size = 0
+    chunk_size = 1024 * 1024  # 1MB chunks
+
+    while True:
+        chunk = await file.read(chunk_size)
+        if not chunk:
+            break
+        total_size += len(chunk)
+        if total_size > max_size:
+            raise HTTPException(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                detail=f"File too large. Maximum size is {settings.max_upload_size_mb}MB",
+            )
+        chunks.append(chunk)
+
+    content = b"".join(chunks)
+    file_size = total_size
+
     # Generate storage key
     file_extension = file.filename.rsplit(".", 1)[-1] if "." in file.filename else "mp4"
     storage_key = f"videos/{uuid_lib.uuid4()}.{file_extension}"
-
-    # Read file content and save
-    content = await file.read()
-    file_size = len(content)
 
     # Save to local storage
     storage_service.save_uploaded_file(content, storage_key)
@@ -79,6 +99,12 @@ async def list_videos(
 ):
     """List all videos in the organization."""
     user, organization, membership = auth
+
+    # Validate pagination limits
+    if limit > 100:
+        limit = 100
+    if skip < 0:
+        skip = 0
 
     result = await db.execute(
         select(Video)

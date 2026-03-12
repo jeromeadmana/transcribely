@@ -1,12 +1,19 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Request
 from fastapi.responses import RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 import httpx
+import secrets
 from urllib.parse import urlencode
+from datetime import datetime, timedelta, timezone
+from pydantic import BaseModel
+from slowapi import Limiter
+from slowapi.util import get_remote_address
 
 from app.core.database import get_db
 from app.core.config import settings
+
+limiter = Limiter(key_func=get_remote_address)
 from app.core.security import (
     get_password_hash,
     verify_password,
@@ -23,12 +30,21 @@ from app.schemas.user import (
     RefreshTokenRequest,
 )
 
+# Temporary storage for OAuth auth codes (in production, use Redis)
+_oauth_codes: dict[str, tuple[str, datetime]] = {}
+
+
+class OAuthCodeExchange(BaseModel):
+    code: str
+
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 
 @router.post("/register", response_model=TokenResponse, status_code=status.HTTP_201_CREATED)
+@limiter.limit("5/minute")
 async def register(
+    request: Request,
     user_data: UserCreate,
     db: AsyncSession = Depends(get_db),
 ):
@@ -78,7 +94,9 @@ async def register(
 
 
 @router.post("/login", response_model=TokenResponse)
+@limiter.limit("10/minute")
 async def login(
+    request: Request,
     credentials: UserLogin,
     db: AsyncSession = Depends(get_db),
 ):
@@ -256,10 +274,66 @@ async def google_callback(
             user.avatar_url = google_user.get("picture")
             await db.commit()
 
-    # Generate our JWT tokens
+    # Generate a short-lived auth code instead of passing tokens in URL
+    auth_code = secrets.token_urlsafe(32)
+    expires_at = datetime.now(timezone.utc) + timedelta(minutes=5)
+    _oauth_codes[auth_code] = (str(user.id), expires_at)
+
+    # Clean up expired codes
+    now = datetime.now(timezone.utc)
+    expired_codes = [k for k, v in _oauth_codes.items() if v[1] < now]
+    for code in expired_codes:
+        del _oauth_codes[code]
+
+    # Redirect to frontend with auth code (not tokens)
+    redirect_url = f"{settings.frontend_url}/auth/callback?code={auth_code}"
+    return RedirectResponse(url=redirect_url)
+
+
+@router.post("/oauth/exchange", response_model=TokenResponse)
+@limiter.limit("10/minute")
+async def exchange_oauth_code(
+    request: Request,
+    code_request: OAuthCodeExchange,
+    db: AsyncSession = Depends(get_db),
+):
+    """Exchange OAuth auth code for tokens."""
+    code_data = _oauth_codes.get(code_request.code)
+
+    if not code_data:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid or expired auth code",
+        )
+
+    user_id, expires_at = code_data
+
+    if datetime.now(timezone.utc) > expires_at:
+        del _oauth_codes[code_request.code]
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Auth code expired",
+        )
+
+    # Remove used code
+    del _oauth_codes[code_request.code]
+
+    # Get user
+    result = await db.execute(select(User).where(User.id == user_id))
+    user = result.scalar_one_or_none()
+
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found",
+        )
+
+    # Generate tokens
     access_token = create_access_token(data={"sub": str(user.id)})
     refresh_token = create_refresh_token(data={"sub": str(user.id)})
 
-    # Redirect to frontend with tokens
-    redirect_url = f"{settings.frontend_url}/auth/callback?access_token={access_token}&refresh_token={refresh_token}"
-    return RedirectResponse(url=redirect_url)
+    return TokenResponse(
+        access_token=access_token,
+        refresh_token=refresh_token,
+        user=UserResponse.model_validate(user),
+    )

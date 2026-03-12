@@ -34,8 +34,12 @@ class Settings(BaseSettings):
     google_client_secret: str = ""
 
     # App
+    environment: str = "development"  # "development" or "production"
     frontend_url: str = "http://localhost:3000"
     backend_url: str = "http://localhost:8000"
+
+    # Upload limits
+    max_upload_size_mb: int = 500  # Max file size in MB
 
     class Config:
         env_file = ".env"
