@@ -2,16 +2,25 @@
 
 import { useEffect, useState } from "react";
 import { User as UserIcon, Building, CreditCard, Bell } from "lucide-react";
-import { User } from "@/lib/api";
+import { User, UsageStats, getUsage } from "@/lib/api";
 
 export default function SettingsPage() {
   const [user, setUser] = useState<User | null>(null);
+  const [usage, setUsage] = useState<UsageStats | null>(null);
 
   useEffect(() => {
     const userData = localStorage.getItem("user");
     if (userData) {
       setUser(JSON.parse(userData));
     }
+
+    const fetchUsage = async () => {
+      const result = await getUsage();
+      if (result.data) {
+        setUsage(result.data);
+      }
+    };
+    fetchUsage();
   }, []);
 
   if (!user) return null;
@@ -94,7 +103,9 @@ export default function SettingsPage() {
           <div className="flex items-center justify-between mb-6">
             <div>
               <p className="font-medium text-gray-900">Current Plan</p>
-              <p className="text-sm text-gray-500">Free - 30 minutes/month</p>
+              <p className="text-sm text-gray-500 capitalize">
+                {usage ? `${usage.plan} - ${usage.is_unlimited ? "Unlimited" : `${usage.limit_minutes} minutes/month`}` : "Loading..."}
+              </p>
             </div>
             <span className="px-3 py-1 bg-green-100 text-green-800 text-sm font-medium rounded-full">
               Active
@@ -104,14 +115,31 @@ export default function SettingsPage() {
           <div className="bg-gray-50 rounded-lg p-4 mb-6">
             <div className="flex justify-between mb-2">
               <span className="text-sm text-gray-600">Usage this month</span>
-              <span className="text-sm font-medium">0 / 30 minutes</span>
+              <span className="text-sm font-medium">
+                {usage
+                  ? usage.is_unlimited
+                    ? `${usage.used_minutes.toFixed(1)} minutes used`
+                    : `${usage.used_minutes.toFixed(1)} / ${usage.limit_minutes} minutes`
+                  : "Loading..."}
+              </span>
             </div>
             <div className="h-2 bg-gray-200 rounded-full overflow-hidden">
               <div
-                className="h-full bg-primary-600 rounded-full"
-                style={{ width: "0%" }}
+                className={`h-full rounded-full transition-all duration-500 ${
+                  usage && usage.percentage_used >= 100
+                    ? "bg-red-500"
+                    : usage && usage.percentage_used >= 80
+                    ? "bg-yellow-500"
+                    : "bg-primary-600"
+                }`}
+                style={{ width: `${usage ? Math.min(usage.percentage_used, 100) : 0}%` }}
               />
             </div>
+            {usage && !usage.is_unlimited && usage.remaining_minutes !== null && (
+              <p className="text-xs text-gray-500 mt-2">
+                {usage.remaining_minutes.toFixed(1)} minutes remaining this month
+              </p>
+            )}
           </div>
 
           <button className="px-4 py-2 border border-primary-600 text-primary-600 rounded-lg hover:bg-primary-50 transition">

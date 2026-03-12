@@ -18,6 +18,7 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
+  const prevVideoStatusesRef = useRef<Map<string, string>>(new Map());
 
   const fetchVideos = useCallback(async () => {
     const result = await listVideos();
@@ -41,6 +42,24 @@ export default function DashboardPage() {
     fetchVideos();
     fetchUsage();
   }, [fetchVideos, fetchUsage]);
+
+  // Check if any video just completed and refresh usage
+  useEffect(() => {
+    const prevStatuses = prevVideoStatusesRef.current;
+    let anyJustCompleted = false;
+
+    videos.forEach((v) => {
+      const prevStatus = prevStatuses.get(v.id);
+      if (prevStatus && prevStatus !== "completed" && v.status === "completed") {
+        anyJustCompleted = true;
+      }
+      prevStatuses.set(v.id, v.status);
+    });
+
+    if (anyJustCompleted) {
+      fetchUsage();
+    }
+  }, [videos, fetchUsage]);
 
   // Separate effect for polling - only when there are processing videos
   useEffect(() => {
